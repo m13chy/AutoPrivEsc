@@ -1,0 +1,68 @@
+<#
+Script: Privesc_BlueTeam.ps1
+Propósito: Buscar indicadores de intentos de bypass/escala y recopilar evidencia para el SOC.
+Ejecutar con privilegios administrativos; pensado para auditoría / detección.
+#>
+
+Write-Host "== CHECK RÁPIDO DE INDICADORES DE ESCALADA/AMS I BYPASS =="
+
+# 1) Revisar si el campo amsiInitFailed está presente y su valor (indicador de manipulación)
+try {
+    $amsiType = [Ref].Assembly.GetType('System.Management.Automation.AmsiUtils')
+    if ($amsiType) {
+        $field = $amsiType.GetField('amsiInitFailed','NonPublic,Static')
+        if ($field) {
+            $value = $field.GetValue($null)
+            Write-Output ("[ALERTA] AmsiUtils.amsiInitFailed = {0}" -f $value)
+        } else {
+            Write-Output "[INFO] Campo amsiInitFailed no presente (método conocido: presencia variable entre versiones)."
+        }
+    } else {
+        Write-Output "[INFO] Tipo AmsiUtils no encontrado en este runtime."
+    }
+} catch {
+    Write-Output ("[ERROR] Al leer AmsiUtils: {0}" -f $_.Exception.Message)
+}
+
+# 2) Buscar tareas programadas que descarguen o ejecuten comandos remotos
+Write-Output "`n[INFO] Revisando tareas programadas sospechosas..."
+try {
+    Get-ScheduledTask | ForEach-Object {
+        $td = $_.TaskName
+        $actions = (Get-ScheduledTaskInfo -TaskName $td -ErrorAction SilentlyContinue)
+        $xml = (Export-ScheduledTask -TaskName $td).Xml
+        if ($xml -match 'http|https|\\w+://|DownloadString|Invoke-Expression') {
+            Write-Output ("[SUSP] {0} -> contiene probable ejecución remota" -f $td)
+        }
+    }
+} catch {
+    Write-Output ("[WARN] Error al enumerar tareas: {0}" -f $_.Exception.Message)
+}
+
+# 3) Revisar procesos PowerShell y parámetros (comandos que incluyen IEX / DownloadString / -EncodedCommand)
+Write-Output "`n[INFO] Procesos PowerShell con parámetros sospechosos..."
+Get-CimInstance Win32_Process -Filter "Name LIKE '%powershell%'" |
+Select-Object ProcessId,CommandLine,ExecutablePath | Where-Object {
+    $_.CommandLine -match 'IEX|DownloadString|-EncodedCommand|Invoke-Expression'
+} | Format-Table -AutoSize
+
+# 4) Comprobar eventos relevantes de scriptblock / AMSI / tareas (abrirlogs locales)
+Write-Output "`n[INFO] Consultar eventos recientes (ScriptBlockLogging & Task creation)..."
+# Event IDs: 4104 (ScriptBlock), 4688 (process creation), 4698 (task creation), 4697 (service install)
+Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-PowerShell/Operational'; Id=4104; StartTime=(Get-Date).AddHours(-6)} -MaxEvents 50 |
+Select-Object TimeCreated,Id,Message
+
+Get-WinEvent -FilterHashtable @{LogName='Security'; Id=4688; StartTime=(Get-Date).AddHours(-6)} -MaxEvents 50 |
+Select-Object TimeCreated,Id,Message
+
+# 5) Inventario rápido de miembros del grupo Administradores (evidencia)
+Write-Output "`n[INFO] Miembros del grupo Administradores locales:"
+net localgroup administrators
+
+# 6) Recolección de artefactos para análisis (ruta temporal)
+$reportDir = "$env:ProgramData\PrivescAudit_$(Get-Date -Format yyyyMMdd_HHmmss)"
+New-Item -Path $reportDir -ItemType Directory -Force | Out-Null
+(Get-Process powershell -ErrorAction SilentlyContinue | Select-Object ProcessName,Id,StartTime,Path) | Out-File "$reportDir\powershell_processes.txt"
+(Get-ScheduledTask | Export-Clixml) | Out-File "$reportDir\scheduled_tasks.xml"
+wevtutil qe Microsoft-Windows-PowerShell/Operational /rd:true /c:200 > "$reportDir\PowerShell_Operational.log"
+Write-Output ("[DONE] Evidencia recolectada en: {0}" -f $reportDir)
